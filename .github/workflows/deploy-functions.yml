@@ -10,12 +10,12 @@ permissions:
 
 env:
   AZURE_FUNCTIONAPP_NAME: reco-func-43896
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: "./app"   # dossier qui contient function_app.py
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: "app"   # dossier qui contient function_app.py
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
+    environment: p10
     steps:
       - uses: actions/checkout@v4
 
