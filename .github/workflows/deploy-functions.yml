@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  AZURE_FUNCTIONAPP_NAME: reco-func-43896
+  AZURE_FUNCTIONAPP_NAME: "reco-func-43896"
   AZURE_FUNCTIONAPP_PACKAGE_PATH: "app"   # dossier qui contient function_app.py
 
 jobs:
