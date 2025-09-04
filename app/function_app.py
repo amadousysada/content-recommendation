@@ -1,4 +1,7 @@
-import os, json
+import os, json, sys, pkgutil
+_site = os.path.join(os.path.dirname(__file__), '.python_packages', 'lib', 'site-packages')
+if os.path.isdir(_site) and _site not in sys.path:
+    sys.path.insert(0, _site)
 import azure.functions as func
 
 app = func.FunctionApp()
@@ -106,53 +109,20 @@ def precompute_timer(mytimer: func.TimerRequest) -> None:
         out  = {"user_id": str(uid), "suggestions": sugs[:5], "source": "precomputed"}
         _upload_json(c_prec, f"{uid}.json", out)
 
-@app.route(route="diag", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def diag(req: func.HttpRequest) -> func.HttpResponse:
-    # 1) quel compte lit réellement la Function ?
-    conn = os.getenv("AzureWebJobsStorage", "")
-    account = None
-    for kv in conn.split(";"):
-        if kv.startswith("AccountName="):
-            account = kv.split("=", 1)[1]
-            break
-
-    # 2) est-ce que models/index.json et data/users.json sont *vraiment* lisibles ?
-    models = os.getenv("BLOB_CONTAINER_MODELS", "models")
-    data   = os.getenv("BLOB_CONTAINER_DATA", "data")
-    prec   = os.getenv("BLOB_CONTAINER_PRECOMPUTED", "precomputed")
-
-    ok_index = ok_users = ok_prec_sample = False
-    err = None
-    try:
-        # essaie de lire les deux blobs de base
-        from azure.core.exceptions import ResourceNotFoundError
-        try:
-            _ = _get_blob_text(models, "index.json")
-            ok_index = True
-        except ResourceNotFoundError:
-            ok_index = False
-
-        try:
-            _ = _get_blob_text(data, "users.json")
-            ok_users = True
-        except ResourceNotFoundError:
-            ok_users = False
-
-        # existence d’un pré-calcul pour user_id=1 ?
-        try:
-            from azure.storage.blob import BlobServiceClient
-            bc = _client().get_container_client(prec).get_blob_client("1.json")
-            ok_prec_sample = bc.exists()
-        except Exception:
-            ok_prec_sample = False
-
-    except Exception as e:
-        err = str(e)
-
-    payload = {
-        "account_read_by_function": account,
-        "containers": {"models": models, "data": data, "precomputed": prec},
-        "can_read": {"models/index.json": ok_index, "data/users.json": ok_users, "precomputed/1.json": ok_prec_sample},
-        "error": err,
+@app.route(route="diag_packages", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def diag_packages(req: func.HttpRequest) -> func.HttpResponse:
+    data = {
+        "cwd": os.getcwd(),
+        "site_dir": _site,
+        "site_dir_exists": os.path.isdir(_site),
+        "sys_path_head": sys.path[:5],
+        "azure_core_present": os.path.exists(os.path.join(_site, "azure", "core", "__init__.py")),
+        "azure_storage_blob_present": os.path.exists(os.path.join(_site, "azure", "storage", "blob", "__init__.py")),
+        "found_azure_pkgs": sorted([m.name for m in pkgutil.iter_modules([_site]) if m.name.startswith("azure")])[:50],
     }
-    return func.HttpResponse(json.dumps(payload), mimetype="application/json", status_code=200)
+    try:
+        import azure, azure.core, azure.storage.blob  # noqa
+        data["import_test"] = "OK"
+    except Exception as e:
+        data["import_test"] = f"ERROR: {e}"
+    return func.HttpResponse(json.dumps(data), mimetype="application/json")
