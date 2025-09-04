@@ -1,40 +1,84 @@
-name: Deploy Azure Functions (Python v2 via OIDC)
+# Docs for the Azure Web Apps Deploy action: https://github.com/azure/functions-action
+# More GitHub Actions for Azure: https://github.com/Azure/actions
+# More info on Python, GitHub Actions, and Azure Functions: https://aka.ms/python-webapps-actions
+
+name: Build and deploy Python project to Azure Function App
 
 on:
   push:
-    branches: [ main ]
-
-permissions:
-  id-token: write    # requis pour OIDC
-  contents: read
+    branches:
+      - main
+  workflow_dispatch:
 
 env:
-  AZURE_FUNCTIONAPP_NAME: "reco-func-43896"
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: "app"   # dossier qui contient function_app.py
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: 'app'
+  PYTHON_VERSION: '3.11'
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     environment: p10
-    steps:
-      - uses: actions/checkout@v4
+    permissions:
+      contents: read
 
-      - name: Login to Azure (OIDC)
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python version
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Create and start virtual environment
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+
+      - name: Install dependencies
+        run: pip install -r app/requirements.txt
+
+      - name: Zip artifact for deployment
+        run: zip release.zip ./* -r
+
+      - name: Upload artifact for deployment job
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-app
+          path: |
+            release.zip
+            !venv/
+
+  deploy:
+    runs-on: ubuntu-latest
+    environment: p10
+    needs: build
+    permissions:
+      id-token: write #This is required for requesting the JWT
+      contents: read #This is required for actions/checkout
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: python-app
+
+      - name: Unzip artifact for deployment
+        run: |
+          unzip release.zip
+          rm release.zip
+        
+      - name: Login to Azure
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Setup Python (optional for tests/lint)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Deploy to Azure Functions
+      - name: 'Deploy to Azure Functions'
         uses: Azure/functions-action@v1
+        id: deploy-to-function
         with:
-          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+          app-name: "reco-func-43896"
+          slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          enable-oryx-build: true
-          scm-do-build-during-deployment: true

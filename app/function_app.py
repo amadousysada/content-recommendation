@@ -1,6 +1,5 @@
 import os, json
 import azure.functions as func
-from azure.storage.blob import BlobServiceClient
 
 app = func.FunctionApp()
 
@@ -8,10 +7,19 @@ app = func.FunctionApp()
 _blob_client = None
 _index_cache = None
 
-def _client() -> BlobServiceClient:
+def _client():
+    """Créé le client Blob à la première demande (import paresseux + garde-fous)."""
     global _blob_client
     if _blob_client is None:
-        conn = os.environ["AzureWebJobsStorage"]
+        try:
+            from azure.storage.blob import BlobServiceClient
+        except Exception as e:
+            # Message explicite si la lib n'est pas installée
+            raise RuntimeError("Dépendance manquante: azure-storage-blob") from e
+
+        conn = os.getenv("AzureWebJobsStorage")
+        if not conn:
+            raise RuntimeError("App setting 'AzureWebJobsStorage' manquante")
         _blob_client = BlobServiceClient.from_connection_string(conn)
     return _blob_client
 
@@ -35,6 +43,10 @@ def _compute_on_demand(user_id: str) -> dict:
     idx = _get_index()
     sugs = idx.get(user_id) or idx.get("_default", [])
     return {"user_id": user_id, "suggestions": sugs[:5], "source": "realtime"}
+
+@app.route(route="ping", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def ping(req: func.HttpRequest) -> func.HttpResponse:
+    return func.HttpResponse("pong", status_code=200)
 
 # --- HTTP: reco ---
 @app.route(route="recommend_get", auth_level=func.AuthLevel.ANONYMOUS)
