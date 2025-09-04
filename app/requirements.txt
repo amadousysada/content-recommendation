@@ -1,3 +1,4 @@
 azure-monitor-opentelemetry
 azure-functions
 azure-storage-blob
+azure-core

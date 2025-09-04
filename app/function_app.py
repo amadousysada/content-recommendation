@@ -105,3 +105,54 @@ def precompute_timer(mytimer: func.TimerRequest) -> None:
         sugs = index.get(str(uid)) or index.get("_default", [])
         out  = {"user_id": str(uid), "suggestions": sugs[:5], "source": "precomputed"}
         _upload_json(c_prec, f"{uid}.json", out)
+
+@app.route(route="diag", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def diag(req: func.HttpRequest) -> func.HttpResponse:
+    # 1) quel compte lit réellement la Function ?
+    conn = os.getenv("AzureWebJobsStorage", "")
+    account = None
+    for kv in conn.split(";"):
+        if kv.startswith("AccountName="):
+            account = kv.split("=", 1)[1]
+            break
+
+    # 2) est-ce que models/index.json et data/users.json sont *vraiment* lisibles ?
+    models = os.getenv("BLOB_CONTAINER_MODELS", "models")
+    data   = os.getenv("BLOB_CONTAINER_DATA", "data")
+    prec   = os.getenv("BLOB_CONTAINER_PRECOMPUTED", "precomputed")
+
+    ok_index = ok_users = ok_prec_sample = False
+    err = None
+    try:
+        # essaie de lire les deux blobs de base
+        from azure.core.exceptions import ResourceNotFoundError
+        try:
+            _ = _get_blob_text(models, "index.json")
+            ok_index = True
+        except ResourceNotFoundError:
+            ok_index = False
+
+        try:
+            _ = _get_blob_text(data, "users.json")
+            ok_users = True
+        except ResourceNotFoundError:
+            ok_users = False
+
+        # existence d’un pré-calcul pour user_id=1 ?
+        try:
+            from azure.storage.blob import BlobServiceClient
+            bc = _client().get_container_client(prec).get_blob_client("1.json")
+            ok_prec_sample = bc.exists()
+        except Exception:
+            ok_prec_sample = False
+
+    except Exception as e:
+        err = str(e)
+
+    payload = {
+        "account_read_by_function": account,
+        "containers": {"models": models, "data": data, "precomputed": prec},
+        "can_read": {"models/index.json": ok_index, "data/users.json": ok_users, "precomputed/1.json": ok_prec_sample},
+        "error": err,
+    }
+    return func.HttpResponse(json.dumps(payload), mimetype="application/json", status_code=200)
