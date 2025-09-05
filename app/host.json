@@ -6,7 +6,13 @@
         "isEnabled": true,
         "excludedTypes": "Request"
       }
-    }
+    },
+    "logLevel": {
+      "default": "Debug",
+      "Function": "Debug",
+      "Host.Results": "Debug"
+    },
+    "console": { "isEnabled": true }
   },
   "extensionBundle": {
     "id": "Microsoft.Azure.Functions.ExtensionBundle",
