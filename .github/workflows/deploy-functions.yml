@@ -3,6 +3,9 @@ name: Deploy Functions (remote build via publish-profile)
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'app/**'
+      - '.github/workflows/deploy-functions.yml'
 
 permissions:
   contents: read

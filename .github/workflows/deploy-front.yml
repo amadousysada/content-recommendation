@@ -1,0 +1,36 @@
+name: Deploy Streamlit to Azure Web App
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'streamlit/**'
+      - '.github/workflows/deploy-front.yml'
+  workflow_dispatch:
+
+env:
+  WEBAPP_NAME: "reco-streamlit-43896"
+  APP_PATH: "streamlit"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: p10
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure WebApp (zipDeploy)
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: ${{ env.WEBAPP_NAME }}
+          package: ${{ env.APP_PATH }}
