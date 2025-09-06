@@ -27,14 +27,29 @@ def _get_popularity_counts(clicks_df: pd.DataFrame) -> pd.Series:
     if "_pop_counts" in _cache and _cache["_pop_counts"] is not None:
         return _cache["_pop_counts"]  # type: ignore
 
-    counts = (
-        clicks_df["click_article_id"]
-        .astype(int)
-        .value_counts()
-        .sort_values(ascending=False)
-    )
-    _cache["_pop_counts"] = counts
-    return counts
+    item_popularity_df = (clicks_df
+                          .groupby('click_article_id')
+                          .agg(clicks=('user_id', 'size'),unique_users=('user_id', 'nunique'))
+                          .reset_index()
+                          .rename(columns={'click_article_id': 'article_id'})
+                          )
+
+    item_popularity_df['depth'] = item_popularity_df['clicks'] / item_popularity_df['unique_users'].clip(lower=1)  # >1 si des users cliquent plusieurs fois
+
+    for col in ['clicks', 'unique_users', 'depth']:
+        item_popularity_df[f'{col}_log'] = np.log1p(item_popularity_df[col])
+        item_popularity_df[f'{col}_pct'] = item_popularity_df[f'{col}_log'].rank(pct=True)
+
+    # pondérations
+    w_clicks, w_users, w_depth = 0.3, 0.5, 0.2
+    item_popularity_df['score'] = (w_users * item_popularity_df['unique_users_pct']
+                                   + w_clicks * item_popularity_df['clicks_pct']
+                                   + w_depth * item_popularity_df['depth_pct'])
+
+    item_popularity_df_sorted = item_popularity_df.sort_values('score', ascending=False)
+
+    _cache["_pop_counts"] = item_popularity_df_sorted
+    return item_popularity_df_sorted
 
 
 def _recommend_popular(
@@ -50,16 +65,10 @@ def _recommend_popular(
     """
     counts = _get_popularity_counts(clicks_df)  # Series: idx=article_id, val=count
     ignore = set(int(x) for x in (items_to_ignore or []))
-    keep = counts[~counts.index.isin(ignore)].head(topn)
+    recs = counts[~counts.index.isin(ignore)].head(topn)
 
-    if keep.empty:
+    if recs.empty:
         return pd.DataFrame(columns=["article_id", "score"])
-
-    scores = keep.astype(float)
-    maxc = float(scores.iloc[0]) if len(scores) else 1.0
-    scores = scores / (maxc if maxc > 0 else 1.0)
-
-    recs = pd.DataFrame({"article_id": keep.index.astype(int), "score": scores.values})
 
     if verbose:
         recs = recs.merge(articles_df, on="article_id", how="left")
