@@ -3,10 +3,12 @@ import io
 import json
 import pickle
 import logging
+import traceback
+
 import numpy as np
 import pandas as pd
 
-from typing import Dict, List, Tuple, Optional
+from typing import List, Optional
 
 import azure.functions as func
 from azure.storage.blob import BlobServiceClient
@@ -68,68 +70,9 @@ def _load_clicks_df() -> pd.DataFrame:
     return df
 
 
-def _parse_embeddings_pickle(
-    obj, articles_df: pd.DataFrame
-) -> Tuple[np.ndarray, np.ndarray]:
+def _load_embeddings() -> np.ndarray:
     """
-    Supporte plusieurs formats de embeddings.pkl :
-    - tuple/list: (item_ids, emb_matrix)
-    - dict: {'item_ids': ..., 'embeddings': ...}
-    - DataFrame avec colonne 'article_id' + colonnes vecteur
-    - np.ndarray : suppose aligné à l’ordre d’articles_df
-    Retourne (item_ids, embeddings) avec ordre **aligné** à item_ids.
-    """
-    if isinstance(obj, tuple) or isinstance(obj, list):
-        item_ids, X = obj
-        item_ids = np.asarray(item_ids).astype(int)
-        X = np.asarray(X, dtype=float)
-        assert X.shape[0] == item_ids.shape[0], (
-            "Embeddings et item_ids de tailles différentes"
-        )
-        return item_ids, X
-
-    if isinstance(obj, dict) and "item_ids" in obj and "embeddings" in obj:
-        item_ids = np.asarray(obj["item_ids"]).astype(int)
-        X = np.asarray(obj["embeddings"], dtype=float)
-        assert X.shape[0] == item_ids.shape[0], (
-            "Embeddings et item_ids de tailles différentes"
-        )
-        return item_ids, X
-
-    if isinstance(obj, pd.DataFrame):
-        if "article_id" not in obj.columns:
-            raise ValueError("DataFrame embeddings doit contenir 'article_id'")
-        df = obj.copy()
-        df["article_id"] = df["article_id"].astype(int)
-        vec_cols = [c for c in df.columns if c != "article_id"]
-        X = df[vec_cols].to_numpy(dtype=float)
-        item_ids = df["article_id"].to_numpy(dtype=int)
-        return item_ids, X
-
-    # np.ndarray brut -> on l’assume aligné à articles_df
-    if isinstance(obj, np.ndarray):
-        A = _ensure_numpy_2d(obj)
-        item_ids = articles_df["article_id"].to_numpy(dtype=int)
-        assert A.shape[0] == item_ids.shape[0], (
-            "embeddings np.ndarray doit avoir même nombre de lignes que articles_metadata"
-        )
-        return item_ids, np.asarray(A, dtype=float)
-
-    raise ValueError(
-        "Format embeddings.pkl non supporté (tuple/dict/df/ndarray attendus)."
-    )
-
-
-def _ensure_numpy_2d(x: np.ndarray) -> np.ndarray:
-    x = np.asarray(x)
-    if x.ndim == 1:
-        return x.reshape(-1, 1)
-    return x
-
-
-def _load_embeddings() -> Tuple[np.ndarray, np.ndarray, Dict[int, int]]:
-    """
-    Retourne (item_ids, embeddings, id2idx)
+    Retourne embeddings
     """
     raw = _get_blob_bytes(BLOB_CONTAINER_MODELS, "embeddings.pkl")
     obj = pickle.loads(raw)
@@ -220,18 +163,17 @@ def recommend_get(req: func.HttpRequest) -> func.HttpResponse:
                 mimetype="application/json",
                 status_code=200,
             )
-
         model = ContentBasedRecommender(articles_df=articles_df, embeddings=X)
         recs = model.recommend_items(
             user_vec=user_vec, items_to_ignore=already, topn=topn, verbose=verbose
         )
-
         payload = {
             "user_id": int(user_id),
             "source": "realtime-sklearn",
             "model": model.get_model_name(),
             "recommendations": json.loads(recs.to_json(orient="records")),
         }
+
         return func.HttpResponse(
             json.dumps(payload, ensure_ascii=False),
             mimetype="application/json",
@@ -323,8 +265,8 @@ def diag_model(req: func.HttpRequest) -> func.HttpResponse:
         except Exception as e:
             ok_load["clicks_df"] = f"ERR: {e}"
         try:
-            ids, X, id2idx = _load_embeddings()
-            ok_load["embeddings"] = {"n_items": int(X.shape[0]), "dim": int(X.shape[1])}
+            emb = _load_embeddings()
+            ok_load["embeddings"] = {"n_items": int(emb.shape[0]), "dim": int(emb.shape[1])}
         except Exception as e:
             ok_load["embeddings"] = f"ERR: {e}"
 

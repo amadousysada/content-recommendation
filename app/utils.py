@@ -1,7 +1,9 @@
+import traceback
+
 import pandas as pd
 import numpy as np
 
-import logging
+import logging, os
 from typing import Dict, List
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -14,6 +16,9 @@ _cache: Dict[str, object] = {
     "embeddings": None,  # np.ndarray[float]
     "id2idx": None,  # Dict[int,int]
 }
+
+DTYPE = np.float32
+TOPK_CHUNK = int(os.getenv("RECO_TOPK_CHUNK", "50000"))
 
 
 # =========================
@@ -94,10 +99,18 @@ class ContentBasedRecommender:
 
     def __init__(self, articles_df: pd.DataFrame, embeddings: np.ndarray):
         self.items_df = articles_df
-        self._emb = embeddings  # (n_items, d)
-        self._item_ids = np.asarray(
-            articles_df.article_id.unique(), dtype=int
-        )  # (n_items,)
+        self._item_ids = np.asarray(articles_df.article_id.unique(), dtype=int)
+
+        E = np.asarray(embeddings, dtype=DTYPE, order="C")
+        if E.ndim != 2:
+            E = E.reshape(E.shape[0], -1)
+
+        norms = np.linalg.norm(E, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-8
+        self._emb = E / norms
+
+        self._id2row = {int(a): i for i, a in enumerate(self._item_ids)}
+
 
     def get_model_name(self) -> str:
         return self.MODEL_NAME
@@ -105,25 +118,58 @@ class ContentBasedRecommender:
     def recommend_items(
         self, user_vec: np.ndarray, items_to_ignore: List[int], topn: int, verbose: bool
     ) -> pd.DataFrame:
-        user_vec = np.asarray(user_vec, dtype=float).reshape(1, -1)
-        sims = cosine_similarity(user_vec, self._emb)[0]  # (n_items,)
+        # user_vec -> float32 normalisé
+        uv = np.asarray(user_vec, dtype=DTYPE).reshape(-1)
+        uv_norm = np.linalg.norm(uv)
+        if uv_norm == 0 or not np.isfinite(uv_norm):
+            logger.warning("CBF:user_vec zero-norm → no recommendations")
+            return pd.DataFrame(columns=["article_id", "score"])
+        uv /= uv_norm
 
-        # Filtrage des déjà vus
-        ignore = set(int(x) for x in (items_to_ignore or []))
-        pairs = [
-            (int(a), float(s))
-            for a, s in zip(self._item_ids, sims)
-            if int(a) not in ignore
-        ]
+        n = self._emb.shape[0]
+        ignore_mask = np.zeros(n, dtype=bool)
+        for a in (items_to_ignore or []):
+            idx = self._id2row.get(int(a))
+            if idx is not None:
+                ignore_mask[idx] = True
 
-        # tri décroissant
-        pairs.sort(key=lambda t: -t[1])
-        pairs = pairs[:topn]
+        best_idx = np.empty(0, dtype=np.int32)
+        best_scores = np.empty(0, dtype=DTYPE)
 
-        recs = pd.DataFrame(pairs, columns=["article_id", "score"])
+        chunk = TOPK_CHUNK
+
+        for i in range(0, n, chunk):
+            j = min(i + chunk, n)
+            sim = self._emb[i:j].dot(uv)  # float32, (chunk,)
+            if ignore_mask[i:j].any():
+                sim[ignore_mask[i:j]] = -np.inf
+
+            k_local = min(max(topn * 3, topn), j - i)
+            part = np.argpartition(sim, -k_local)[-k_local:]
+            cand_idx = (i + part).astype(np.int32, copy=False)
+            cand_scores = sim[part]
+
+            best_idx = np.concatenate([best_idx, cand_idx])
+            best_scores = np.concatenate([best_scores, cand_scores])
+
+            if best_idx.size > topn * 10:
+                gk = np.argpartition(best_scores, -topn)[-topn:]
+                best_idx, best_scores = best_idx[gk], best_scores[gk]
+
+        if best_idx.size == 0:
+            return pd.DataFrame(columns=["article_id", "score"])
+
+        gk = np.argpartition(best_scores, -topn)[-topn:]
+        order = gk[np.argsort(-best_scores[gk])]
+        sel_idx = best_idx[order]
+        sel_scores = best_scores[order].astype(float, copy=False)
+
+        sel_ids = self._item_ids[sel_idx]
+        recs = pd.DataFrame({"article_id": sel_ids, "score": sel_scores})
+
         if verbose:
             recs = recs.merge(
-                self.items_df, how="left", left_on="article_id", right_on="article_id"
+                self.items_df, how="left", on="article_id"
             )[
                 [
                     "article_id",
@@ -134,5 +180,4 @@ class ContentBasedRecommender:
                     "words_count",
                 ]
             ]
-        logger.info(recs)
         return recs
